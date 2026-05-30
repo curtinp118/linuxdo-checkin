@@ -102,7 +102,8 @@ class LinuxDoBrowser:
     def parse_cookie_string(cookie_str: str) -> list[dict]:
         """
         解析 Cookie 字符串，支持两种格式：
-        1. JSON 格式: {"name1": "value1", "name2": "value2"}
+        1. JSON 格式: {"name1": "value1", "name2": {...}}
+           - 自动修复 g_state 等值为裸 JSON 对象的非标准格式
         2. 传统格式: "name1=value1; name2=value2"
         返回 DrissionPage 所需的 cookie 列表格式。
         """
@@ -111,25 +112,27 @@ class LinuxDoBrowser:
         cookie_str = cookie_str.strip()
         cookies = []
 
-        # 尝试 JSON 格式解析
         if cookie_str.startswith("{"):
             try:
                 cookie_dict = json.loads(cookie_str)
-                for name, value in cookie_dict.items():
-                    # g_state 的值是嵌套 JSON 对象，需要序列化
-                    if isinstance(value, dict):
-                        value = json.dumps(value)
-                    cookies.append(
-                        {
-                            "name": name.strip(),
-                            "value": str(value).strip(),
-                            "domain": ".linux.do",
-                            "path": "/",
-                        }
-                    )
-                return cookies
             except json.JSONDecodeError:
-                pass  # 非法 JSON，回退到传统格式
+                # JSON 不合法（如 g_state 值为裸对象 "{"k":v}" 未转义）
+                # 先尝试预处理修复，再 json.loads
+                fixed = LinuxDoBrowser._fix_cookie_json(cookie_str)
+                cookie_dict = json.loads(fixed)
+
+            for name, value in cookie_dict.items():
+                if isinstance(value, dict):
+                    value = json.dumps(value)
+                cookies.append(
+                    {
+                        "name": name.strip(),
+                        "value": str(value).strip(),
+                        "domain": ".linux.do",
+                        "path": "/",
+                    }
+                )
+            return cookies
 
         # 传统格式: "name1=value1; name2=value2"
         for part in cookie_str.split(";"):
@@ -146,15 +149,93 @@ class LinuxDoBrowser:
                 )
         return cookies
 
+    @staticmethod
+    def _fix_cookie_json(s: str) -> str:
+        """
+        修复值为裸 JSON 对象但被引号包裹的 Cookie 字符串。
+        如 "g_state": "{"i_l":0}" → "g_state": "{\"i_l\":0}"
+        通过大括号深度匹配找到真正的值边界，再转义内部引号。
+        """
+        result = []
+        i = 0
+        length = len(s)
+
+        while i < length:
+            if s[i] == '"':
+                # 尝试读取 key
+                j = i + 1
+                while j < length and s[j] != '"':
+                    if s[j] == "\\":
+                        j += 1
+                    j += 1
+                if j >= length:
+                    result.append(s[i:])
+                    break
+
+                key = s[i + 1 : j]
+                k = j + 1  # skip closing "
+
+                # 跳过空白和冒号
+                while k < length and s[k] in " \n\r\t":
+                    k += 1
+                if k < length and s[k] == ":":
+                    k += 1
+                while k < length and s[k] in " \n\r\t":
+                    k += 1
+
+                # 检查值是否为裸 JSON 对象 "{"key":val}"
+                if (
+                    k < length
+                    and s[k] == '"'
+                    and k + 1 < length
+                    and s[k + 1] == "{"
+                ):
+                    val_start = k + 1
+                    depth = 0
+                    m = val_start
+                    found = False
+                    while m < length:
+                        if s[m] == "{":
+                            depth += 1
+                        elif s[m] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                if m + 1 < length and s[m + 1] == '"':
+                                    # 匹配到 "key": "{...}" → 转义内部引号
+                                    inner = s[val_start : m + 1]
+                                    escaped = inner.replace('"', '\\"')
+                                    result.append(f'"{key}": "{escaped}"')
+                                    i = m + 2  # skip }"
+                                    found = True
+                                break
+                        elif s[m] == '"':
+                            m += 1
+                            while m < length and s[m] != '"':
+                                if s[m] == "\\":
+                                    m += 1
+                                m += 1
+                            m += 1
+                            continue
+                        m += 1
+                    if found:
+                        continue
+
+            result.append(s[i])
+            i += 1
+
+        return "".join(result)
+
     def login_with_cookies(self, cookie_str: str) -> bool:
         """使用手动设置的 Cookie 直接登录，跳过账号密码流程"""
         logger.info("检测到手动 Cookie，尝试 Cookie 登录...")
+        logger.debug(f"Cookie 原始长度: {len(cookie_str)} 字符")
         dp_cookies = self.parse_cookie_string(cookie_str)
         if not dp_cookies:
             logger.error("Cookie 解析失败或为空，无法使用 Cookie 登录")
             return False
 
-        logger.info(f"成功解析 {len(dp_cookies)} 个 Cookie 条目")
+        cookie_names = [c["name"] for c in dp_cookies]
+        logger.info(f"成功解析 {len(dp_cookies)} 个 Cookie: {cookie_names}")
 
         # 同步到 requests.Session，以便后续 API 请求（如 print_connect_info）使用
         for ck in dp_cookies:
