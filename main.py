@@ -370,6 +370,7 @@ class LinuxDoBrowser:
                 browsed_count = self.click_topic()
                 if not browsed_count:
                     logger.error("点击主题失败，程序终止")
+                    self.notifier.send_error("浏览帖子失败", "未找到主题帖或点击失败")
                     return
                 logger.info(f"完成浏览任务，共浏览 {browsed_count} 篇帖子")
             
@@ -388,6 +389,13 @@ class LinuxDoBrowser:
                 connect_info=connect_info,
                 elapsed_seconds=elapsed
             )
+        except Exception as e:
+            logger.error(f"程序运行异常: {str(e)}")
+            import traceback
+            error_trace = traceback.format_exc()
+            logger.error(error_trace)
+            # 发送异常错误通知
+            self.notifier.send_error("程序运行异常", str(e), error_trace)
         finally:
             try:
                 self.page.close()

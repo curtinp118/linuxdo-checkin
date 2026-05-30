@@ -110,6 +110,34 @@ class NotificationManager:
         
         self.send_all(title, message)
     
+    def send_error(self, error_type: str, error_msg: str, error_trace: str = ""):
+        """发送错误通知"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        title = f"❌ LinuxDo 签到 - {error_type}"
+        message = f"""🚨 **任务执行失败**
+
+📅 时间：{now}
+❌ 错误类型：{error_type}
+💬 错误信息：{error_msg}"""
+        
+        if error_trace:
+            # 截取前500字符避免消息过长
+            if len(error_trace) > 500:
+                error_trace = error_trace[:500] + "\n... (已截断)"
+            message += f"""
+
+📋 **错误堆栈**
+```
+{error_trace}
+```"""
+        
+        message += """
+
+⚠️ 请检查配置或网络环境后重试"""
+        
+        self.send_all(title, message)
+    
     def _generate_progress_bar(self, current: int, total: int, length: int = 10) -> str:
         """生成进度条"""
         filled = int(length * current / total)
