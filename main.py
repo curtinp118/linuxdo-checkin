@@ -101,11 +101,38 @@ class LinuxDoBrowser:
     @staticmethod
     def parse_cookie_string(cookie_str: str) -> list[dict]:
         """
-        解析浏览器复制的 Cookie 字符串格式: "name1=value1; name2=value2"
+        解析 Cookie 字符串，支持两种格式：
+        1. JSON 格式: {"name1": "value1", "name2": "value2"}
+        2. 传统格式: "name1=value1; name2=value2"
         返回 DrissionPage 所需的 cookie 列表格式。
         """
+        import json
+
+        cookie_str = cookie_str.strip()
         cookies = []
-        for part in cookie_str.strip().split(";"):
+
+        # 尝试 JSON 格式解析
+        if cookie_str.startswith("{"):
+            try:
+                cookie_dict = json.loads(cookie_str)
+                for name, value in cookie_dict.items():
+                    # g_state 的值是嵌套 JSON 对象，需要序列化
+                    if isinstance(value, dict):
+                        value = json.dumps(value)
+                    cookies.append(
+                        {
+                            "name": name.strip(),
+                            "value": str(value).strip(),
+                            "domain": ".linux.do",
+                            "path": "/",
+                        }
+                    )
+                return cookies
+            except json.JSONDecodeError:
+                pass  # 非法 JSON，回退到传统格式
+
+        # 传统格式: "name1=value1; name2=value2"
+        for part in cookie_str.split(";"):
             part = part.strip()
             if "=" in part:
                 name, _, value = part.partition("=")
