@@ -121,6 +121,7 @@ class LinuxDoBrowser:
         返回 DrissionPage 所需的 cookie 列表格式。
         """
         import json
+        from urllib.parse import unquote
 
         cookie_str = cookie_str.strip()
         cookies = []
@@ -137,10 +138,12 @@ class LinuxDoBrowser:
             for name, value in cookie_dict.items():
                 if isinstance(value, dict):
                     value = json.dumps(value)
+                # URL 解码（浏览器 Cookie 值可能包含 %2B %3D 等编码）
+                value = unquote(str(value).strip())
                 cookies.append(
                     {
                         "name": name.strip(),
-                        "value": str(value).strip(),
+                        "value": value,
                         "domain": ".linux.do",
                         "path": "/",
                     }
@@ -155,7 +158,7 @@ class LinuxDoBrowser:
                 cookies.append(
                     {
                         "name": name.strip(),
-                        "value": value.strip(),
+                        "value": unquote(value.strip()),
                         "domain": ".linux.do",
                         "path": "/",
                     }
