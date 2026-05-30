@@ -276,14 +276,23 @@ class LinuxDoBrowser:
             return True
 
     def click_topic(self):
-        topic_list = self.page.ele("@id=list-area").eles(".:title")
+        topic_list = self.page.ele("@id=list-area").eles(".title")
         if not topic_list:
             logger.error("未找到主题帖")
             return False
-        logger.info(f"发现 {len(topic_list)} 个主题帖，随机选择10个")
-        for topic in random.sample(topic_list, 10):
+        total = len(topic_list)
+        browse_count = min(25, total)
+        logger.info(f"发现 {total} 个主题帖，随机选择 {browse_count} 个浏览")
+        
+        browsed = 0
+        for topic in random.sample(topic_list, browse_count):
             self.click_one_topic(topic.attr("href"))
-        return True
+            browsed += 1
+            # 每浏览5篇发送进度通知
+            if browsed % 5 == 0:
+                self.notifier.send_progress(browsed, browse_count)
+        
+        return browsed
 
     @retry_decorator()
     def click_one_topic(self, topic_url):
@@ -330,26 +339,55 @@ class LinuxDoBrowser:
             time.sleep(wait_time)
 
     def run(self):
+        start_time = time.time()
+        login_success = False
+        login_method = ""
+        browsed_count = 0
+        
         try:
             # 优先使用手动 Cookie 登录，没有再使用账号密码
             if COOKIES:
                 login_res = self.login_with_cookies(COOKIES)
+                login_method = "Cookie"
                 if not login_res:
                     logger.warning("Cookie 登录失败，尝试账号密码登录...")
                     login_res = self.login()
+                    login_method = "账号密码"
             else:
                 login_res = self.login()
-            if not login_res:  # 登录
+                login_method = "账号密码"
+            
+            if not login_res:
                 logger.warning("登录验证失败")
+                self.notifier.send_login_result(False, login_method, USERNAME)
+                return
+            
+            login_success = True
+            # 登录成功通知
+            self.notifier.send_login_result(True, login_method, USERNAME)
 
             if BROWSE_ENABLED:
-                click_topic_res = self.click_topic()  # 点击主题
-                if not click_topic_res:
+                browsed_count = self.click_topic()
+                if not browsed_count:
                     logger.error("点击主题失败，程序终止")
                     return
-                logger.info("完成浏览任务")
-            self.print_connect_info()  # 打印连接信息
-            self.send_notifications(BROWSE_ENABLED)  # 发送通知
+                logger.info(f"完成浏览任务，共浏览 {browsed_count} 篇帖子")
+            
+            # 获取连接信息
+            connect_info = self.get_connect_info()
+            
+            # 计算耗时
+            elapsed = time.time() - start_time
+            
+            # 发送完成任务总体概览通知
+            self.notifier.send_summary(
+                username=USERNAME,
+                login_method=login_method,
+                browse_enabled=BROWSE_ENABLED,
+                browsed_count=browsed_count,
+                connect_info=connect_info,
+                elapsed_seconds=elapsed
+            )
         finally:
             try:
                 self.page.close()
@@ -374,7 +412,8 @@ class LinuxDoBrowser:
         except Exception as e:
             logger.error(f"点赞失败: {str(e)}")
 
-    def print_connect_info(self):
+    def get_connect_info(self) -> list:
+        """获取连接信息数据"""
         logger.info("获取连接信息")
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -392,19 +431,15 @@ class LinuxDoBrowser:
                 project = cells[0].text.strip()
                 current = cells[1].text.strip() if cells[1].text.strip() else "0"
                 requirement = cells[2].text.strip() if cells[2].text.strip() else "0"
-                info.append([project, current, requirement])
+                info.append({"project": project, "current": current, "requirement": requirement})
 
         logger.info("--------------Connect Info-----------------")
-        logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
-
-    def send_notifications(self, browse_enabled):
-        """发送签到通知"""
-        status_msg = f"✅每日登录成功: {USERNAME}"
-        if browse_enabled:
-            status_msg += " + 浏览任务完成"
-        
-        # 使用通知管理器发送所有通知
-        self.notifier.send_all("LINUX DO", status_msg)
+        logger.info("\n" + tabulate(
+            [[i["project"], i["current"], i["requirement"]] for i in info],
+            headers=["项目", "当前", "要求"],
+            tablefmt="pretty"
+        ))
+        return info
 
 
 if __name__ == "__main__":
