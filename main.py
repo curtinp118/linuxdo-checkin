@@ -81,12 +81,25 @@ class LinuxDoBrowser:
             .headless(True)
             .incognito(True)
             .set_argument("--no-sandbox")
+            .set_argument("--disable-blink-features=AutomationControlled")
+            .set_argument("--disable-infobars")
+            .set_argument("--disable-dev-shm-usage")
+            .set_argument("--disable-gpu")
+            .set_argument("--window-size=1920,1080")
+            .set_argument("--start-maximized")
         )
         co.set_user_agent(
             f"Mozilla/5.0 ({platformIdentifier}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         )
         self.browser = Chromium(co)
         self.page = self.browser.new_tab()
+        # 注入反检测 JS — 隐藏 webdriver 标识
+        self.page.run_js("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+            window.chrome = {runtime: {}};
+        """)
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -247,21 +260,49 @@ class LinuxDoBrowser:
         self.page.get(HOME_URL)
         time.sleep(5)
 
-        # 验证登录状态
+        return self._verify_login()
+
+    def _verify_login(self) -> bool:
+        """
+        验证登录状态，优先用 Discourse API，回退到 DOM 检测。
+        API 方式不受浏览器指纹检测影响。
+        """
+        # 方式1：Discourse API 验证（最可靠）
+        try:
+            resp = self.session.get(
+                "https://linux.do/session/current.json",
+                impersonate="chrome136",
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                user = data.get("current_user")
+                if user and user.get("username"):
+                    logger.info(f"API 验证登录成功: {user['username']}")
+                    return True
+                else:
+                    logger.warning("API 返回无用户信息")
+            else:
+                logger.warning(f"API 验证请求失败: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"API 验证异常: {str(e)}")
+
+        # 方式2：DOM 检测（回退）
         try:
             user_ele = self.page.ele("@id=current-user")
         except Exception as e:
-            logger.warning(f"Cookie 登录验证异常: {str(e)}")
+            logger.warning(f"DOM 验证异常: {str(e)}")
             return True
-        if not user_ele:
-            if "avatar" in self.page.html:
-                logger.info("Cookie 登录验证成功 (通过 avatar)")
-                return True
-            logger.error("Cookie 登录验证失败 (未找到 current-user)，Cookie 可能已过期")
-            return False
-        else:
-            logger.info("Cookie 登录验证成功")
+        if user_ele:
+            logger.info("DOM 验证登录成功")
             return True
+
+        # 方式3：HTML 内容检测（最终回退）
+        if "avatar" in self.page.html:
+            logger.info("HTML 验证登录成功 (通过 avatar)")
+            return True
+
+        logger.error("登录验证失败：所有方式均未检测到登录状态")
+        return False
 
     def login(self):
         logger.info("开始账号密码登录")
@@ -340,21 +381,7 @@ class LinuxDoBrowser:
         self.page.get(HOME_URL)
 
         time.sleep(5)
-        try:
-            user_ele = self.page.ele("@id=current-user")
-        except Exception as e:
-            logger.warning(f"登录验证失败: {str(e)}")
-            return True
-        if not user_ele:
-            # Fallback check for avatar
-            if "avatar" in self.page.html:
-                logger.info("登录验证成功 (通过 avatar)")
-                return True
-            logger.error("登录验证失败 (未找到 current-user)")
-            return False
-        else:
-            logger.info("登录验证成功")
-            return True
+        return self._verify_login()
 
     def click_topic(self):
         topic_list = self.page.ele("@id=list-area").eles(".title")
